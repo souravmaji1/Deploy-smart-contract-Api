@@ -4,6 +4,9 @@ const { ethers } = require('ethers');
 const solc = require('solc');
 const cors = require('cors');
 const axios = require('axios');
+const schedule = require('node-schedule');
+
+
 
 const app = express();
 const port = 5000;
@@ -14,7 +17,7 @@ app.use(bodyParser.json());
 
 
 
-const providerTestnet = new ethers.providers.JsonRpcProvider('https://polygon-mumbai.g.alchemy.com/v2/y-tHEEOpcVyKsSW3AH1HLHHn97E8F0bw');
+const providerTestnet = new ethers.providers.JsonRpcProvider('https://polygon-mumbai.g.alchemy.com/v2/TLmFnCSKSQnh2uMk7iDnuyXc9fpMC_DD');
 const providerGoerli = new ethers.providers.JsonRpcProvider('https://eth-goerli.g.alchemy.com/v2/9opda0G1Yts3YkDAKMNNKhdmmNvKhLWI');
 const providerSepholi = new ethers.providers.JsonRpcProvider('https://eth-sepolia.g.alchemy.com/v2/Zxso-MefVcYftbdS3VaKaRAFo9qTOC6R');
 
@@ -102,6 +105,133 @@ async function compileAndDeploySmartContract(smartContractSource, privateKey, ne
     contractAddress: contractAddress,
   };
 }
+
+
+
+// Function to execute a scheduled contract function call
+async function executeScheduledFunction(contractAddress, functionName, inputValues) {
+  try {
+    // Fetch contract ABI dynamically from Etherscan API
+    const etherscanApiKey = 'XB61QPDHJQA19IXP8TEEUJ83YTS4NY5BRH';
+    const abiResponse = await axios.get(
+      `https://api-testnet.polygonscan.com/api?module=contract&action=getabi&address=${contractAddress}&apikey=${etherscanApiKey}`
+    );
+
+    if (abiResponse.data.status === '1') {
+      const contractABI = JSON.parse(abiResponse.data.result);
+
+      const provider = new ethers.providers.JsonRpcProvider(
+        'https://polygon-mumbai.g.alchemy.com/v2/TLmFnCSKSQnh2uMk7iDnuyXc9fpMC_DD'
+      ); // Replace with your provider
+
+      // Create a contract instance
+      const contract = new ethers.Contract(contractAddress, contractABI, provider);
+
+      // Find the function in the ABI
+      const selectedFunction = contractABI.find((func) => func.name === functionName);
+
+      if (!selectedFunction) {
+        console.error('Function not found in the contract ABI.');
+        return;
+      }
+
+      const wallet = new ethers.Wallet('d8974f697875e513cda40bb4a6a43c5ec09aefbbe918b9012c6e5720deebcb29', provider); // Replace with your private key
+      const contractWithSigner = contract.connect(wallet);
+
+      const overrides = { gasLimit: 2000000 }; // Adjust gas limit as needed
+
+      const transaction = await contractWithSigner[functionName](...(Object.values(inputValues)), overrides);
+      
+      const receipt = await transaction.wait();
+     // const transactionHash = receipt.transactionHash;
+
+      console.log('Scheduled transaction successful. Transaction hash:', receipt.transactionHash);
+    //  return transactionHash;
+    } else {
+      console.error('Error fetching contract ABI:', abiResponse.data.message);
+    }
+  } catch (error) {
+    console.error('Error executing scheduled function:', error);
+  }
+}
+
+app.post('/smart-contract', async (req, res) => {
+  try {
+    const { contractCode } = req.body;
+
+    if (!contractCode) {
+      return res.status(400).json({ error: 'Contract code is required in the request body.' });
+    }
+
+    const input = {
+      language: 'Solidity',
+      sources: {
+        'SmartContract.sol': {
+          content: contractCode,
+        },
+      },
+      settings: {
+        outputSelection: {
+          '*': {
+            '*': ['abi', 'evm.bytecode'],
+          },
+        },
+      },
+    };
+
+    const output = JSON.parse(solc.compile(JSON.stringify(input)));
+
+    if (output.errors) {
+      return res.status(400).json({ errors: output.errors });
+    }
+
+    // Your compiled contract ABI and bytecode from the compilation output
+    const contractInfo = Object.values(output.contracts['SmartContract.sol'])[0];
+    const contractABI = contractInfo.abi;
+    const contractBytecode = contractInfo.evm.bytecode.object;
+
+    res.status(200).json({ abi: contractABI, bytecode: contractBytecode });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+
+// Endpoint to schedule a contract function call
+app.post('/schedule-function', async (req, res) => {
+  try {
+    const { contractAddress, functionName, inputValues, scheduleTime } = req.body;
+    console.log('Received request:', { contractAddress, functionName, inputValues, scheduleTime });
+
+    // Schedule the function call
+    const scheduledJob = schedule.scheduleJob(scheduleTime, async () => {
+      await executeScheduledFunction(contractAddress, functionName, inputValues);
+    });
+
+    if (!scheduledJob) {
+      console.error('Error scheduling function call. Check your cron expression and try again.');
+      return res.status(400).json({ error: 'Error scheduling function call' });
+    }
+
+    console.log(scheduledJob);
+
+    res.status(200).json({
+      message: 'Function call scheduled successfully' 
+    });
+  } catch (error) {
+   console.error('Error scheduling function call:', error);
+   res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+
+
+
+
+
 
 app.post('/deploy', async (req, res) => {
   try {
@@ -226,3 +356,4 @@ app.get('/contract-info/:contractAddress', async (req, res) => {
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
+
